@@ -108,6 +108,20 @@ install_apache() {
     # create lab WebDAV user non-interactively (lab-only credential)
     sudo "${APACHE_PREFIX}/bin/htpasswd" -bc "${APACHE_PREFIX}/conf/.davpasswd" labuser labpass
 
+    # Ensure the DAV modules are loaded. Depending on the build they may be
+    # compiled statically into httpd (already active) or built as shared .so
+    # files (present in modules/ but NOT loaded without a LoadModule line).
+    # Add LoadModule lines only for the shared case, and only if not already
+    # present — and before the WebDAV block below, since httpd reads the config
+    # top-to-bottom and 'Dav On' fails if mod_dav isn't loaded yet.
+    for mod in dav dav_fs; do
+        if [[ -f "${APACHE_PREFIX}/modules/mod_${mod}.so" ]] \
+           && ! grep -q "LoadModule ${mod}_module" "${APACHE_PREFIX}/conf/httpd.conf"; then
+            echo "LoadModule ${mod}_module modules/mod_${mod}.so" \
+                | sudo tee -a "${APACHE_PREFIX}/conf/httpd.conf" >/dev/null
+        fi
+    done
+
     if ! grep -q "WebDAV lab share" "${APACHE_PREFIX}/conf/httpd.conf"; then
         sudo tee -a "${APACHE_PREFIX}/conf/httpd.conf" >/dev/null <<APACHECONF
 
@@ -167,7 +181,10 @@ install_mariadb_server() {
     sudo apt install -y mariadb-server
     sudo systemctl enable --now mariadb
 
-    sudo mysql <<SQL
+    # --skip-ssl: these are all-local lab connections, and this system's
+    # MariaDB client config forces TLS, which fails against the server's
+    # auto-generated cert (MariaDB 11.8 + OpenSSL 3). No TLS is needed locally.
+    sudo mysql --skip-ssl <<SQL
 CREATE DATABASE IF NOT EXISTS ${DB_NAME};
 CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
@@ -191,6 +208,15 @@ install_connc() {
     sudo git clone --branch "v${CONNC_VER}" --depth 1 \
         https://github.com/mariadb-corporation/mariadb-connector-c.git "mcc-${CONNC_VER}"
     cd "mcc-${CONNC_VER}"
+
+    # Connector/C 3.4.8 is older code and builds with -Werror; newer GCC (14/15
+    # on current Kali) flags const-qualifier discards that older GCC did not,
+    # turning them into fatal errors. The project injects -Werror where a
+    # -Wno-error compiler flag can't override it, so strip -Werror from the
+    # build files outright (matches plain -Werror and -Werror=... forms, leaves
+    # other -W flags intact). The warnings then stay non-fatal and 3.4.8 builds.
+    sudo grep -rln 'Werror' . | xargs -r sudo sed -i 's/-Werror[^ "]*//g'
+
     sudo mkdir -p build && cd build
     sudo cmake .. -DCMAKE_INSTALL_PREFIX="${CONNC_PREFIX}" >/dev/null
     sudo make -j"$(nproc)" >/dev/null
@@ -393,7 +419,7 @@ verify() {
     systemctl is-active mariadb 2>/dev/null || warn "not running"
 
     printf '  Lab data:    '
-    sudo mysql "${DB_NAME}" -e "SELECT COUNT(*) AS users FROM users;" 2>/dev/null \
+    sudo mysql --skip-ssl "${DB_NAME}" -e "SELECT COUNT(*) AS users FROM users;" 2>/dev/null \
         | tail -1 | xargs -I{} echo "{} user rows" || warn "no data"
 
     printf '  PHP site:    '
