@@ -1,165 +1,346 @@
-# CVE Lab — Reading List
+# Vulnerable Lab Environment - Setup Guide
 
-Curated references for the three CVEs in the lab, for understanding both the
-**vulnerabilities** and their **mitigations**. Organised per CVE as:
+| CVE | Component | Pinned vulnerable version | Fixed in |
+|-----|-----------|---------------------------|----------|
+| CVE-2026-93546 | Apache HTTP Server (`mod_dav_fs`) | 2.4.68 | 2.4.69 |
+| CVE-2026-19553 | CPython (`ssl` module) | 3.13.15 | 3.13.16 |
+| CVE-2026-44172 | MariaDB Connector/C (`libmariadb`) | 3.4.8 | 3.4.9 |
 
-1. **Primary sources** — the official advisory, CVE record, and the actual patch/commit.
-2. **Weakness background** — the CWE class and foundational material on *why* this
-   kind of bug happens and how it's defended against.
+**Companion files in this package:**
+- `setup-lab.sh` - automated installer that performs this entire guide in one run (see below).
+- `site/index.php`, `site/search.php` - the sample PHP site (§5).
+- `db_client.c` - a C client linked against the pinned 3.4.8 connector (§5b), the piece that
+  makes the MariaDB CVE actually demonstrable rather than just configured.
+- `cve-reading-list.md` - curated advisories, patch commits, and background papers for the
+  vulnerabilities and their mitigations.
 
-> Reading the **patch commits** alongside the advisories is the single most useful
-> exercise: they show the exact lines that were broken and how the fix works. Those
-> are the best defensive, no-exploit-code artifacts for the write-up.
-
----
-
-## CVE-2026-93546 — Apache HTTP Server `mod_dav_fs` integer overflow
-
-**Summary:** An integer overflow (CWE-190) in the `mod_dav_fs` module lets an
-*authenticated* WebDAV client with write access crash Apache worker processes and
-persistently corrupt a directory's property database, via PROPPATCH requests that
-declare a very large number of XML namespaces. Affected through 2.4.68; fixed in 2.4.69.
-CVSS 8.8 (High).
-
-### Primary sources
-- **Apache official security advisory (httpd 2.4 vulnerabilities list):**
-  https://httpd.apache.org/security/vulnerabilities_24.html#CVE-2026-93546
-- **The fix commit (read this for the mitigation):**
-  https://github.com/apache/httpd/commit/fa8c354189597453b2c8b38e081efa9b723abd3c
-- **NVD record:** https://nvd.nist.gov/vuln/detail/CVE-2026-93546
-- **CVE.org record:** https://www.cve.org/CVERecord?id=CVE-2026-93546
-- **Debian security tracker (version/fix status):**
-  https://security-tracker.debian.org/tracker/CVE-2026-93546
-- **SUSE advisory (alternative CVSS analysis — note the differing score):**
-  https://www.suse.com/security/cve/CVE-2026-93546/
-
-### Weakness background (integer overflow / memory safety)
-- **CWE-190: Integer Overflow or Wraparound** — https://cwe.mitre.org/data/definitions/190.html
-- **CWE-131: Incorrect Calculation of Buffer Size** (the usual consequence) —
-  https://cwe.mitre.org/data/definitions/131.html
-- **"Basic Integer Overflows"** — blexim, *Phrack* #60 (the classic introduction to
-  the bug class): http://phrack.org/issues/60/10.html
-- **OWASP — Integer Overflow:** https://owasp.org/www-community/vulnerabilities/Integer_overflow
-- **RFC 4918 — HTTP Extensions for WebDAV** (what PROPPATCH and properties actually are;
-  §9.2 covers PROPPATCH): https://www.rfc-editor.org/rfc/rfc4918
-- **Apache `mod_dav_fs` module docs:** https://httpd.apache.org/docs/2.4/mod/mod_dav_fs.html
-
-### Mitigation-focused reading
-- Apache hardening / WebDAV access control: https://httpd.apache.org/docs/2.4/misc/security_tips.html
-- `LimitXMLRequestBody` directive (caps the request-body size the overflow relies on):
-  https://httpd.apache.org/docs/2.4/mod/core.html#limitxmlrequestbody
+> **Repo layout note:** the `site/` folder here just holds the PHP sources for browsing and
+> reference. The setup - whether you run `setup-lab.sh` or follow the manual steps - writes its
+> own copies of these files to `~/lab-site/` on the VM at install time and serves them from
+> there. So the repo layout is independent of where the app actually runs; moving the sources
+> around in the repo doesn't change the setup. If you prefer to serve the repo copies directly,
+> `cd` into `site/` and run `php -S 127.0.0.1:8000` from there instead.
 
 ---
 
-## CVE-2026-19553 — CPython `ssl.SSLContext.wrap_bio()` hostname-verification bypass
+## Quick path: the automated installer (easiest and recommended)
 
-**Summary:** `wrap_bio()` didn't require a non-`None` `server_hostname` even when
-`check_hostname` was set, so a missing parameter could cause hostname verification to be
-*silently skipped* while appearing to succeed (CWE-297: Improper Validation of
-Certificate with Host Mismatch). Affected < 3.10.22, < 3.11.17, < 3.12.15, < 3.13.16,
-and 3.14/3.15 pre-fix. CVSS v4 ~7.6 (High). Notably, **the fix can be applied in your own
-code without upgrading** — always pass a valid `server_hostname`.
+If you'd rather not run every step by hand, `setup-lab.sh` does the whole guide - base deps,
+all three from-source builds, WebDAV config, the database + seed data, the PHP site, and the C
+client - then prints a verification summary. It is **resumable** (re-run it and it skips steps
+that already succeeded) and asks for confirmation before it starts.
 
-### Primary sources
-- **Python Software Foundation security announcement (oss-security post):**
-  https://www.openwall.com/lists/oss-security/2026/09/30/16
-- **GitHub issue (root-cause discussion):** https://github.com/python/cpython/issues/156793
-- **The fix PR:** https://github.com/python/cpython/pull/158503
-- **The main fix commit (read this for the mitigation):**
-  https://github.com/python/cpython/commit/1697ea386c707142555d98a1263176bbbc014a96
-  - 3.13 branch: https://github.com/python/cpython/commit/f4e43ba525187282f2011da0e6ffc0d2b08d8062
-  - 3.14 branch: https://github.com/python/cpython/commit/966bf426d0b6c31c1b0a255ff14a17143a466ced
-- **PSF advisory (OSV):** https://osv.dev/vulnerability/PSF-2026-44
-- **NVD record:** https://nvd.nist.gov/vuln/detail/CVE-2026-19553
-- **Debian tracker (full list of branch commits):**
-  https://security-tracker.debian.org/tracker/CVE-2026-19553
+```bash
+chmod +x setup-lab.sh
+./setup-lab.sh            # full run
+./setup-lab.sh --verify   # just re-run the verification checks
+```
 
-### Weakness background (TLS identity verification)
-- **CWE-297: Improper Validation of Certificate with Host Mismatch** —
-  https://cwe.mitre.org/data/definitions/297.html
-- **CWE-295: Improper Certificate Validation** — https://cwe.mitre.org/data/definitions/295.html
-- **"The Most Dangerous Code in the World: Validating SSL Certificates in
-  Non-Browser Software"** — Georgiev et al., *ACM CCS 2012*. The definitive paper on
-  exactly this class of failure (apparent-but-broken cert validation):
-  https://www.cs.utexas.edu/~shmat/shmat_ccs12.pdf
-- **RFC 6125 — Representation and Verification of Application Service Identity**
-  (what hostname verification is supposed to do):
-  https://www.rfc-editor.org/rfc/rfc6125
-- **Python `ssl` module docs** (`wrap_bio`, `check_hostname`, `server_hostname`):
-  https://docs.python.org/3/library/ssl.html
-
-### Mitigation-focused reading
-- The advisory's own mitigation guidance (pass a non-empty `server_hostname`) — in the
-  oss-security post above. Good discussion point: a *code-discipline* fix vs. a version upgrade.
+It needs internet while it runs (to download the pinned sources), so run it *before* switching
+the VM to host-only networking. The manual steps below remain the reference for understanding
+what each part does, and for troubleshooting if a build fails.
 
 ---
 
-## CVE-2026-44172 — MariaDB Connector/C `mysql_real_escape_string()` big5 SQL injection
-
-**Summary:** In Connector/C (`libmariadb`) 3.3.18 and 3.4.8,
-`mysql_real_escape_string()` mishandled multi-byte sequences in the **big5** charset, so
-a crafted byte sequence could leave a quote unescaped and reopen SQL injection
-(CWE-89) despite the escaping. **The bug is in the client library, not the server.**
-Fixed in 3.3.19 and 3.4.9. (CVSS varies widely by source — v4 ~6.9 up to critical 9.x.)
-
-### Primary sources
-- **MariaDB GitHub Security Advisory (GHSA-pv9p-5w55-55jm):**
-  https://github.com/MariaDB/server/security/advisories/GHSA-pv9p-5w55-55jm
-- **MariaDB JIRA ticket (CONC-819):** https://jira.mariadb.org/browse/CONC-819
-- **NVD record:** https://nvd.nist.gov/vuln/detail/CVE-2026-44172
-- **CVE.org record:** https://www.cve.org/CVERecord?id=CVE-2026-44172
-- **Red Hat advisory (downstream analysis):**
-  https://access.redhat.com/security/cve/CVE-2026-44172
-- **MariaDB Connector/C repo (compare v3.4.8 vs v3.4.9 for the fix diff):**
-  https://github.com/mariadb-corporation/mariadb-connector-c
-  > No public PoC was released for this CVE — a relevant point for the disclosure section.
-
-### Weakness background (SQL injection + multi-byte charset escaping)
-- **CWE-89: SQL Injection** — https://cwe.mitre.org/data/definitions/89.html
-- **CWE-176: Improper Handling of Unicode Encoding** — https://cwe.mitre.org/data/definitions/176.html
-- **OWASP — SQL Injection:** https://owasp.org/www-community/attacks/SQL_Injection
-- **The classic big5/GBK escaping-bypass writeup** — Chris Shiflett,
-  "addslashes() Versus mysql_real_escape_string()" (the original explanation of the
-  multi-byte-charset escaping flaw this CVE re-instances):
-  https://shiflett.org/blog/2006/addslashes-versus-mysql-real-escape-string
-
-### Mitigation-focused reading (the important one)
-- **OWASP SQL Injection Prevention Cheat Sheet** — parameterised queries as the primary
-  defence; why escaping is the fragile fallback:
-  https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html
-- **OWASP Query Parameterization Cheat Sheet:**
-  https://cheatsheetseries.owasp.org/cheatsheets/Query_Parameterization_Cheat_Sheet.html
-- **PHP docs — Prepared Statements (mysqli):** https://www.php.net/manual/en/mysqli.quickstart.prepared-statements.php
-- **PHP docs — `PDO::ATTR_EMULATE_PREPARES`** (why emulated prepares can re-introduce the
-  escaping path — the key caveat for this CVE):
-  https://www.php.net/manual/en/pdo.setattribute.php
-- Use `utf8mb4` rather than big5 as a connection charset — background:
-  https://dev.mysql.com/doc/refman/8.0/en/charset-unicode-utf8mb4.html
+## 0. Safety & isolation (IMPORTANT!!!!!)
+1. **Networking:** In VirtualBox/VMware, set the VM network adapter to **Host-Only** (or
+   **Internal Network**). This lets your host reach the VM for the demo but keeps the vulnerable
+   services off the internet and your LAN.
+   - You'll need internet *temporarily* to download/build the pinned versions. Do that first on a
+     NAT adapter, then switch to Host-Only before running anything. Or download, then `apt-mark hold`.
+2. **Snapshot:** Once everything is installed and verified, take a VM snapshot named
+   `lab-ready`. If a demo breaks the box, revert in seconds.
+3. **Hold packages** so `apt upgrade` can't silently patch your vulnerable versions:
+   ```bash
+   sudo apt-mark hold apache2 libapache2-mod-* 2>/dev/null || true
+   ```
+4. **Never** put real data, real credentials, or personal files on this VM.
 
 ---
 
-## Cross-cutting references (good for the intro / methodology section)
+## 1. Base packages
 
-- **CVSS v3.1 / v4.0 specification** (how severity scores are built — useful since these
-  three are scored inconsistently across sources):
-  https://www.first.org/cvss/
-- **CWE Top 25 Most Dangerous Software Weaknesses** (places all three bug classes in
-  context): https://cwe.mitre.org/top25/
-- **NIST National Vulnerability Database:** https://nvd.nist.gov/
-- **FIRST EPSS** (exploit-prediction scoring, referenced in several of the advisories):
-  https://www.first.org/epss/
+```bash
+sudo apt update
+sudo apt install -y build-essential wget curl git \
+  libssl-dev libpcre3-dev libxml2-dev zlib1g-dev libapr1-dev libaprutil1-dev \
+  libffi-dev libsqlite3-dev libbz2-dev libreadline-dev
+```
 
 ---
 
-## Suggested reading order for the team
+## 2. CVE-2026-93546 - Apache HTTP Server 2.4.68 (mod_dav_fs)
 
-1. Start with the **three CWE pages** (190, 297, 89) — 10 minutes each, gives the mental model.
-2. Read each **official advisory** for the plain-language description.
-3. Read each **patch commit/diff** — this is where the real understanding (and the
-   defensible demo material) lives.
-4. For depth, the two landmark papers/writeups: **Georgiev et al. (CCS 2012)** for the
-   TLS one, and **Shiflett** for the big5 one.
-5. Finish with the **OWASP cheat sheets** for the mitigation section.
+This flaw is an integer overflow in `mod_dav_fs`, reachable by an **authenticated WebDAV client
+with write access** via PROPPATCH requests. So the demo environment needs: Apache 2.4.68 + WebDAV
+enabled + an auth-protected WebDAV directory that's writable.
 
-*Note: links were verified against official advisories and trackers at the time of
-writing. For live affected-version data, always cross-check the NVD/CVE.org record.*
+### 2a. Build Apache 2.4.68 from source (pinned)
+
+Kali's repo Apache will be too new, so build the exact version into `/opt` to keep it separate
+from the system.
+
+```bash
+cd /usr/local/src
+sudo wget https://archive.apache.org/dist/httpd/httpd-2.4.68.tar.gz
+sudo tar xzf httpd-2.4.68.tar.gz
+cd httpd-2.4.68
+
+sudo ./configure --prefix=/opt/httpd-2.4.68 \
+  --enable-dav --enable-dav-fs --enable-dav-lock \
+  --enable-so --enable-rewrite --enable-ssl
+sudo make -j"$(nproc)"
+sudo make install
+```
+
+Verify the version:
+```bash
+/opt/httpd-2.4.68/bin/httpd -v     # should print 2.4.68
+/opt/httpd-2.4.68/bin/httpd -M | grep dav   # confirm dav_module + dav_fs_module loaded
+```
+
+### 2b. Configure a writable, authenticated WebDAV location
+
+Append to `/opt/httpd-2.4.68/conf/httpd.conf` (modules may already be built-in; if `-M` showed
+them, skip the LoadModule lines):
+
+```apache
+# WebDAV lab share
+DavLockDB "/opt/httpd-2.4.68/var/DavLock"
+Alias /webdav "/opt/httpd-2.4.68/htdocs/webdav"
+
+<Directory "/opt/httpd-2.4.68/htdocs/webdav">
+    Dav On
+    AuthType Basic
+    AuthName "webdav-lab"
+    AuthUserFile "/opt/httpd-2.4.68/conf/.davpasswd"
+    Require valid-user
+</Directory>
+```
+
+Create the directory, lock DB dir, and a lab user:
+```bash
+sudo mkdir -p /opt/httpd-2.4.68/htdocs/webdav /opt/httpd-2.4.68/var
+sudo chown -R daemon:daemon /opt/httpd-2.4.68/htdocs/webdav /opt/httpd-2.4.68/var
+# create WebDAV user 'labuser' (you'll be prompted for a password)
+sudo /opt/httpd-2.4.68/bin/htpasswd -c /opt/httpd-2.4.68/conf/.davpasswd labuser
+# the automated script instead sets it non-interactively with the lab password 'labpass':
+# sudo /opt/httpd-2.4.68/bin/htpasswd -bc /opt/httpd-2.4.68/conf/.davpasswd labuser labpass
+```
+
+Start it (on a non-standard port so it doesn't clash with anything):
+```bash
+sudo /opt/httpd-2.4.68/bin/apachectl -k start
+# tail logs: /opt/httpd-2.4.68/logs/error_log
+```
+
+**Verify WebDAV is live and writable** (this is a normal WebDAV operation, not an exploit):
+```bash
+# upload a test file via WebDAV using the lab creds
+curl -u labuser:labpass -T /etc/hostname http://localhost/webdav/test.txt
+# list it back
+curl -u labuser:labpass http://localhost/webdav/
+```
+If `test.txt` appears, the vulnerable surface (authenticated WebDAV write) is correctly exposed
+for your demo.
+
+---
+
+## 3. CVE-2026-19553 - Python 3.13.15 (ssl module)
+
+This is unrelated to the web stack - it's a hostname-verification bypass in CPython's `ssl`
+module (`SSLContext.wrap_bio()`). Build 3.13.15 as a **separate interpreter** so you don't touch Kali's system Python.
+
+```bash
+cd /usr/local/src
+sudo wget https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tgz
+sudo tar xzf Python-3.13.15.tgz
+cd Python-3.13.15
+
+sudo ./configure --prefix=/opt/python-3.13.15 --with-openssl=/usr --enable-optimizations
+sudo make -j"$(nproc)"
+sudo make altinstall      # altinstall = does NOT overwrite /usr/bin/python3
+```
+
+Verify:
+```bash
+/opt/python-3.13.15/bin/python3.13 --version    # Python 3.13.15
+/opt/python-3.13.15/bin/python3.13 -c "import ssl; print(ssl.OPENSSL_VERSION)"
+```
+
+Make a venv for any demo scripts:
+```bash
+/opt/python-3.13.15/bin/python3.13 -m venv ~/cve-19553-venv
+source ~/cve-19553-venv/bin/activate
+```
+
+That gives you a pinned 3.13.15 interpreter with the vulnerable `ssl` behavior present. (The official note for this CVE is that the fix is a behavior change in `wrap_bio`; 3.13.15 predates it.)
+
+---
+
+## 4. CVE-2026-44172 - MariaDB Connector/C 3.4.8 (libmariadb)
+
+Key point: the vulnerability is in the **client library** (`libmariadb` / Connector/C), in
+`mysql_real_escape_string()` mishandling the `big5` charset - *not* in the MariaDB server. So you
+need: a MariaDB server (any recent version is fine) + Connector/C **3.4.8** pinned + an app that
+connects using the `big5` charset and escapes input with that function.
+
+### 4a. MariaDB server (for the app to talk to)
+
+```bash
+sudo apt install -y mariadb-server
+sudo systemctl start mariadb
+sudo mysql -e "CREATE DATABASE labdb; \
+  CREATE USER 'labapp'@'localhost' IDENTIFIED BY 'labpass'; \
+  GRANT ALL ON labdb.* TO 'labapp'@'localhost'; \
+  FLUSH PRIVILEGES;"
+sudo mysql labdb -e "CREATE TABLE users(id INT, name VARCHAR(64), secret VARCHAR(64)); \
+  INSERT INTO users VALUES (1,'alice','flag_alpha'),(2,'bob','flag_bravo');"
+```
+Set the server's charset so the big5 path is exercisable:
+```bash
+sudo mysql -e "SHOW VARIABLES LIKE 'character_set%';"
+```
+
+### 4b. Build Connector/C 3.4.8 from source (pinned)
+
+```bash
+cd /usr/local/src
+sudo git clone --branch v3.4.8 --depth 1 \
+  https://github.com/mariadb-corporation/mariadb-connector-c.git mcc-3.4.8
+cd mcc-3.4.8
+sudo mkdir build && cd build
+sudo cmake .. -DCMAKE_INSTALL_PREFIX=/opt/libmariadb-3.4.8
+sudo make -j"$(nproc)"
+sudo make install
+```
+Verify the pinned version:
+```bash
+ls /opt/libmariadb-3.4.8/lib/mariadb/
+/opt/libmariadb-3.4.8/bin/mariadb_config --version 2>/dev/null || true
+```
+
+Any C or PHP program you build against `/opt/libmariadb-3.4.8` will use the vulnerable escaping
+routine. (See §5 for wiring PHP to it - note the caveat there.)
+
+---
+
+## 5. Sample PHP site
+
+A minimal PHP app that (a) serves normally, and (b) exposes a DB-query page that connects with the
+`big5` charset - the configuration relevant to the MariaDB CVE.
+
+### 5a. PHP + a lightweight server
+```bash
+sudo apt install -y php php-mysql php-cli
+mkdir -p ~/lab-site && cd ~/lab-site
+```
+
+Create `~/lab-site/index.php`:
+```php
+<?php
+// Lab landing page
+echo "<h1>CVE Lab Demo Site</h1>";
+echo "<ul>";
+echo "<li><a href='search.php?name=alice'>User lookup (big5 charset demo)</a></li>";
+echo "</ul>";
+```
+
+Create `~/lab-site/search.php`:
+```php
+<?php
+// Demo query page. Connects using big5 charset - the setting relevant to CVE-2026-44172.
+$mysqli = new mysqli("127.0.0.1", "labapp", "labpass", "labdb");
+if ($mysqli->connect_errno) { die("DB connect failed: " . $mysqli->connect_error); }
+
+// Set big5 - this is the charset involved in the Connector/C escaping bug.
+$mysqli->set_charset("big5");
+
+$name = $_GET['name'] ?? '';
+$escaped = $mysqli->real_escape_string($name);   // the function at the center of the CVE
+$sql = "SELECT id, name FROM users WHERE name = '$escaped'";
+
+echo "<p>Query: " . htmlspecialchars($sql) . "</p>";
+$res = $mysqli->query($sql);
+if ($res) {
+    while ($row = $res->fetch_assoc()) {
+        echo "Found: #{$row['id']} {$row['name']}<br>";
+    }
+} else {
+    echo "Query error: " . htmlspecialchars($mysqli->error);
+}
+```
+
+Run it:
+```bash
+cd ~/lab-site
+php -S 127.0.0.1:8000
+# browse to http://127.0.0.1:8000/
+```
+
+> **Caveat on PHP + the pinned connector:** distro PHP links against its own bundled `mysqlnd`/
+> `libmariadb`, so by default it won't use your `/opt/libmariadb-3.4.8` build. Getting PHP to use
+> the *exact* pinned 3.4.8 requires either compiling PHP `--with-mysqli=/opt/libmariadb-3.4.8` or
+> writing a small **C program** linked against it (see §5b). For a cleaner "exact version"
+> demonstration of this specific CVE, a tiny C client against `/opt/libmariadb-3.4.8` is the most
+> faithful. If your instructor only needs the big5/charset configuration shown in a PHP app, the
+> above is fine. Ask which they expect - it changes whether you need to recompile PHP.
+
+### 5b. C client linked against the pinned connector (the faithful target)
+
+Because the PHP site uses PHP's *own* bundled connector, the pinned 3.4.8 build isn't actually
+in its path. The C client closes that gap: it links explicitly against `/opt/libmariadb-3.4.8`,
+so it genuinely exercises the vulnerable escaping routine. `db_client.c` is included in this
+package (the automated script also writes and compiles it). It mirrors `search.php` - connects
+with the `big5` charset and escapes input with `mysql_real_escape_string()` - and prints the
+escaped bytes so the behavior is visible. It is a **target app only**; it contains no attack
+payload and takes the lookup name as an argument.
+
+Compile it against the pinned connector (paths may vary slightly by build layout):
+```bash
+INC=$(dirname "$(find /opt/libmariadb-3.4.8 -name mysql.h | head -1)")
+LIB=$(dirname "$(find /opt/libmariadb-3.4.8 -name 'libmariadb.so*' | head -1)")
+gcc ~/lab-site/db_client.c -o ~/lab-site/db_client \
+  -I"$INC" -L"$LIB" -lmariadb -Wl,-rpath,"$LIB"
+```
+
+Run it (benign usage) and confirm it's linked to 3.4.8:
+```bash
+~/lab-site/db_client alice          # 'client library' line in the output shows the version
+ldd ~/lab-site/db_client | grep mariadb   # confirms it loads /opt/libmariadb-3.4.8
+```
+
+The `-Wl,-rpath` flag bakes in the path so the binary loads the pinned 3.4.8 at runtime rather
+than the system library. For a before/after mitigation demo you can rebuild the same client
+against a patched 3.4.9 connector and compare the escaped output for the *same* input - using
+test input supplied by your course, not generated here.
+
+---
+
+## 6. Final verification checklist
+
+```bash
+# Apache 2.4.68 + WebDAV
+/opt/httpd-2.4.68/bin/httpd -v
+curl -u labuser http://localhost/webdav/
+
+# Python 3.13.15
+/opt/python-3.13.15/bin/python3.13 --version
+
+# Connector/C 3.4.8
+ls /opt/libmariadb-3.4.8/lib
+
+# MariaDB server + data
+sudo mysql labdb -e "SELECT * FROM users;"
+
+# PHP site
+curl http://127.0.0.1:8000/
+
+# C client linked to the pinned 3.4.8 connector
+~/lab-site/db_client alice
+ldd ~/lab-site/db_client | grep mariadb
+```
+
+Or just run `./setup-lab.sh --verify`, which checks all of the above at once.
+
+Then: **take the `lab-ready` snapshot**, switch the network adapter to Host-Only, and you're set.
