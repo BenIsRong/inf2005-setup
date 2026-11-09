@@ -121,7 +121,7 @@ def do_query(name_bytes):
                     cols = []
                     for j in range(nfields):
                         val = row[j]
-                        cols.append(val.decode(errors="replace") if val else "NULL")
+                        cols.append(val.decode("big5", errors="replace") if val else "NULL")
                     info["rows"].append(cols)
             lib.mysql_free_result(result)
 
