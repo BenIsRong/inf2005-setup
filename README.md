@@ -10,7 +10,7 @@
 - `setup-lab.sh` - automated installer that performs this entire guide in one run (see below).
 - `site/web_app.py` - the sample web app (§5): a pure-Python server that loads the pinned
   Connector/C 3.4.8 **directly via ctypes**, so it genuinely exercises the vulnerable big5
-  escaping routine (PHP can't - see §5).
+  escaping routine.
 - `db_client.c` - a C client linked against the pinned 3.4.8 connector (§5b), an alternative
   faithful target that makes the MariaDB CVE demonstrable rather than just configured.
 - `cve-reading-list.md` - curated advisories, patch commits, and background papers for the
@@ -251,11 +251,9 @@ Python web app that loads either one directly.)
 A minimal web app that (a) serves normally, and (b) exposes a DB-query page that connects with the
 `big5` charset - the configuration relevant to the MariaDB CVE.
 
-> **Why not PHP?** Distro PHP links its *own* bundled `mysqlnd`/`libmariadb`, so a PHP site would
-> never actually use your `/opt/libmariadb-3.4.8` build - the CVE demo wouldn't be faithful without
-> recompiling PHP `--with-mysqli=/opt/libmariadb-3.4.8`. The Python app sidesteps that entirely: it
-> loads the pinned connector's `.so` **directly via `ctypes`**, so it genuinely exercises the
-> vulnerable `mysql_real_escape_string()` - no recompiling anything.
+> The app loads the pinned connector's `.so` **directly via `ctypes`**, so it genuinely exercises
+> the vulnerable `mysql_real_escape_string()` - no recompiling anything, and switching between the
+> vulnerable 3.4.8 and the patched 3.4.11 is just a one-line path change (see §5a).
 
 ### 5a. Run the Python web app
 

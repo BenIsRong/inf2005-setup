@@ -255,10 +255,10 @@ install_connc() {
 # Sample web app (Python) — loads the pinned Connector/C 3.4.8 directly
 # ============================================================================
 # A pure-Python HTTP server that loads the pinned libmariadb 3.4.8 via ctypes,
-# so it genuinely exercises the vulnerable big5 escaping routine (unlike PHP,
-# which links its own bundled connector). Uses only the standard library — no
-# extra packages, and the system python3 is fine (this is NOT the pinned 3.13.15
-# interpreter, which belongs to the unrelated ssl CVE). TARGET app, no payload.
+# so it genuinely exercises the vulnerable big5 escaping routine. Uses only the
+# standard library — no extra packages, and the system python3 is fine (this is
+# NOT the pinned 3.13.15 interpreter, which belongs to the unrelated ssl CVE).
+# TARGET app, no payload.
 install_web_app() {
     if done_before web_app; then ok "Web app already created (skip)"; return; fi
     say "Creating the Python sample web app"
@@ -656,8 +656,8 @@ ${c_yellow} NEXT STEPS / CAVEATS${c_off}
   * Switch the VM network adapter to Host-Only / Internal NOW, then snapshot
     the VM as 'lab-ready'.
   * The web app loads ${CONNC_PREFIX} (or ${CONNC_FIXED_PREFIX}) directly via
-    ctypes, so it genuinely exercises the pinned connector's escaping routine —
-    no PHP, and nothing needs recompiling to switch between vuln and patched.
+    ctypes, so it genuinely exercises the pinned connector's escaping routine,
+    and nothing needs recompiling to switch between vuln and patched.
 
 NOTES
 }
