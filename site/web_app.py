@@ -1,14 +1,13 @@
 import ctypes
 import ctypes.util
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, unquote_to_bytes
+from urllib.parse import urlparse, parse_qs
 import html
 import os
 
 LIB_PATH = "/opt/libmariadb-3.4.8/lib/mariadb/libmariadb.so"
 #LIB_PATH = "/opt/libmariadb-3.4.11/lib/mariadb/libmariadb.so"
 if not os.path.exists(LIB_PATH):
-    # try alternate layout
     for root, dirs, files in os.walk("/opt/libmariadb-3.4.8"):
         for f in files:
             if f.startswith("libmariadb.so"):
@@ -65,16 +64,14 @@ lib.mysql_get_client_info.argtypes = []
 lib.mysql_character_set_name.restype = ctypes.c_char_p
 lib.mysql_character_set_name.argtypes = [ctypes.c_void_p]
 
-MYSQL_SET_CHARSET_NAME = 7  # mysql option enum value
+MYSQL_SET_CHARSET_NAME = 7
 
 
 def do_query(name_bytes):
-    """Connect, escape, query — mirrors the C client exactly."""
     conn = lib.mysql_init(None)
     if not conn:
         return None, "mysql_init failed"
 
-    # Set big5 before connect, same as the original C client
     lib.mysql_options(conn, MYSQL_SET_CHARSET_NAME, b"big5")
 
     ret = lib.mysql_real_connect(
@@ -88,15 +85,12 @@ def do_query(name_bytes):
     client_ver = lib.mysql_get_client_info().decode(errors="replace")
     charset = lib.mysql_character_set_name(conn).decode(errors="replace")
 
-    # Escape with the vulnerable function
     escaped_buf = ctypes.create_string_buffer(len(name_bytes) * 2 + 1)
     esc_len = lib.mysql_real_escape_string(conn, escaped_buf, name_bytes, len(name_bytes))
     escaped = escaped_buf.raw[:esc_len]
 
-    # Build the query
     query = b"SELECT id, name FROM users WHERE name = '" + escaped + b"'"
 
-    # Hex dump of escaped bytes
     hex_dump = " ".join(f"{b:02x}" for b in escaped)
 
     info = {
@@ -155,14 +149,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == "/search":
-            params = parse_qs(parsed.query, keep_blank_values=True)
+            params = parse_qs(parsed.query, keep_blank_values=True, encoding='latin-1')
             name_raw = params.get("name", [None])[0]
 
             if name_raw is None:
                 body = '<p class="info">Enter a name to search.</p>'
             else:
-                # Get raw bytes from the URL-decoded input
-                name_bytes = unquote_to_bytes(name_raw)
+                name_bytes = name_raw.encode('latin-1')
 
                 info, err = do_query(name_bytes)
                 if err:

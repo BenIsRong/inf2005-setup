@@ -23,13 +23,15 @@ set -euo pipefail
 # ---- pinned versions --------------------------------------------------------
 APACHE_VER="2.4.68"
 PYTHON_VER="3.13.15"
-CONNC_VER="3.4.8"
+CONNC_VER="3.4.8"          # vulnerable connector (default target for web_app.py / db_client)
+CONNC_FIXED_VER="3.4.11"   # patched connector, for the before/after mitigation demo
 
 # ---- paths ------------------------------------------------------------------
 SRC_DIR="/usr/local/src"
 APACHE_PREFIX="/opt/httpd-${APACHE_VER}"
 PYTHON_PREFIX="/opt/python-${PYTHON_VER}"
 CONNC_PREFIX="/opt/libmariadb-${CONNC_VER}"
+CONNC_FIXED_PREFIX="/opt/libmariadb-${CONNC_FIXED_VER}"
 SITE_DIR="${HOME}/lab-site"
 STAMP_DIR="${HOME}/.cve-lab-stamps"   # marks completed steps for resumability
 
@@ -211,97 +213,259 @@ SQL
     ok "MariaDB server ready (db=${DB_NAME}, user=${DB_USER})"
 }
 
-install_connc() {
-    if done_before connc; then ok "Connector/C ${CONNC_VER} already built (skip)"; return; fi
-    say "Building MariaDB Connector/C ${CONNC_VER} (CVE-2026-44172)"
+# Build one pinned Connector/C from source into its own prefix.
+#   $1 version (e.g. 3.4.8)   $2 install prefix   $3 label for logging
+build_connc() {
+    local ver="$1" prefix="$2" label="$3" stamp="connc-$1"
+    if done_before "$stamp"; then ok "Connector/C ${ver} already built (skip)"; return; fi
+    say "Building MariaDB Connector/C ${ver} — ${label} (CVE-2026-44172)"
 
     cd "$SRC_DIR"
-    sudo rm -rf "mcc-${CONNC_VER}"
-    sudo git clone --branch "v${CONNC_VER}" --depth 1 \
-        https://github.com/mariadb-corporation/mariadb-connector-c.git "mcc-${CONNC_VER}"
-    cd "mcc-${CONNC_VER}"
+    sudo rm -rf "mcc-${ver}"
+    sudo git clone --branch "v${ver}" --depth 1 \
+        https://github.com/mariadb-corporation/mariadb-connector-c.git "mcc-${ver}"
+    cd "mcc-${ver}"
 
-    # Connector/C 3.4.8 is older code and builds with -Werror; newer GCC (14/15
-    # on current Kali) flags const-qualifier discards that older GCC did not,
-    # turning them into fatal errors. The project injects -Werror where a
-    # -Wno-error compiler flag can't override it, so strip -Werror from the
-    # build files outright (matches plain -Werror and -Werror=... forms, leaves
-    # other -W flags intact). The warnings then stay non-fatal and 3.4.8 builds.
+    # Older Connector/C releases build with -Werror; newer GCC (14/15 on current
+    # Kali) flags const-qualifier discards that older GCC did not, turning them
+    # into fatal errors. The project injects -Werror where a -Wno-error compiler
+    # flag can't override it, so strip -Werror from the build files outright
+    # (matches plain -Werror and -Werror=... forms, leaves other -W flags
+    # intact). The warnings then stay non-fatal and the connector builds.
     sudo grep -rln 'Werror' . | xargs -r sudo sed -i 's/-Werror[^ "]*//g'
 
-    sudo mkdir -p build && cd build
-    sudo cmake .. -DCMAKE_INSTALL_PREFIX="${CONNC_PREFIX}" >/dev/null
+    sudo rm -rf build && sudo mkdir -p build && cd build
+    sudo cmake .. -DCMAKE_INSTALL_PREFIX="${prefix}" >/dev/null
     sudo make -j"$(nproc)" >/dev/null
     sudo make install >/dev/null
 
-    mark_done connc
-    ok "Connector/C ${CONNC_VER} installed at ${CONNC_PREFIX}"
+    mark_done "$stamp"
+    ok "Connector/C ${ver} installed at ${prefix}"
+}
+
+install_connc() {
+    # Vulnerable build (what web_app.py / db_client target by default) ...
+    build_connc "${CONNC_VER}"       "${CONNC_PREFIX}"       "vulnerable target"
+    # ... and the patched build, so you can run the SAME input through both and
+    # compare the escaped output for the before/after mitigation demo.
+    build_connc "${CONNC_FIXED_VER}" "${CONNC_FIXED_PREFIX}" "patched / before-after demo"
 }
 
 # ============================================================================
-# PHP sample site
+# Sample web app (Python) — loads the pinned Connector/C 3.4.8 directly
 # ============================================================================
-install_php_site() {
-    if done_before php_site; then ok "PHP site already created (skip)"; return; fi
-    say "Installing PHP and creating the sample site"
-    sudo apt install -y php php-mysql php-cli
+# A pure-Python HTTP server that loads the pinned libmariadb 3.4.8 via ctypes,
+# so it genuinely exercises the vulnerable big5 escaping routine (unlike PHP,
+# which links its own bundled connector). Uses only the standard library — no
+# extra packages, and the system python3 is fine (this is NOT the pinned 3.13.15
+# interpreter, which belongs to the unrelated ssl CVE). TARGET app, no payload.
+install_web_app() {
+    if done_before web_app; then ok "Web app already created (skip)"; return; fi
+    say "Creating the Python sample web app"
+    command -v python3 >/dev/null || die "python3 not found (needed for the web app)."
     mkdir -p "$SITE_DIR"
 
-    cat > "${SITE_DIR}/index.php" <<'PHPINDEX'
-<?php // CVE Lab Demo Site — landing page (target app only) ?>
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<title>CVE Lab Demo Site</title>
-<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:3rem auto;padding:0 1rem}
-code{background:#f0f0f0;padding:.1rem .3rem;border-radius:3px}
-.warn{background:#fff4e5;border-left:4px solid #e69500;padding:.6rem 1rem;margin:1rem 0}</style>
-</head><body>
-<h1>CVE Lab Demo Site</h1>
-<div class="warn">Isolated lab environment running intentionally vulnerable software.
-Keep this VM on a host-only / internal network.</div>
-<p>Demo pages:</p>
-<ul><li><a href="search.php?name=alice">User lookup</a> &mdash; connects using the
-<code>big5</code> charset (configuration relevant to CVE-2026-44172).</li></ul>
-</body></html>
-PHPINDEX
+    cat > "${SITE_DIR}/web_app.py" <<'WEBAPP'
+import ctypes
+import ctypes.util
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+import html
+import os
 
-    cat > "${SITE_DIR}/search.php" <<'PHPSEARCH'
-<?php
-// CVE Lab — user lookup. TARGET app (configuration relevant to CVE-2026-44172).
-// Written the normal way, relying on real_escape_string(); the flaw is in the
-// underlying connector's big5 handling, not in this code. No attack payload here.
-header('Content-Type: text/html; charset=utf-8');
-$mysqli = new mysqli('127.0.0.1', 'labapp', 'labpass', 'labdb');
-if ($mysqli->connect_errno) { http_response_code(500); die('DB connect failed: '.htmlspecialchars($mysqli->connect_error)); }
-$mysqli->set_charset('big5');
-$name = $_GET['name'] ?? '';
-$escaped = $mysqli->real_escape_string($name);
-$sql = "SELECT id, name FROM users WHERE name = '$escaped'";
-?>
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>User lookup — CVE Lab</title>
-<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:3rem auto;padding:0 1rem}
-.q{background:#f0f0f0;padding:.5rem .7rem;border-radius:4px;font-family:monospace;word-break:break-all}</style>
-</head><body>
-<h1>User lookup</h1>
-<form method="get" action="search.php">
-<label>Name: <input type="text" name="name" value="<?= htmlspecialchars($name) ?>"></label>
-<button type="submit">Search</button></form>
-<p>Query sent to the database:</p>
-<div class="q"><?= htmlspecialchars($sql) ?></div>
-<div class="result"><?php
-$res = $mysqli->query($sql);
-if ($res) {
-    if ($res->num_rows === 0) echo '<p>No rows matched.</p>';
-    while ($row = $res->fetch_assoc())
-        echo 'Found: #'.htmlspecialchars($row['id']).' '.htmlspecialchars($row['name']).'<br>';
-} else { echo '<p>Query error: '.htmlspecialchars($mysqli->error).'</p>'; }
-?></div>
-<p style="margin-top:2rem;"><a href="index.php">&larr; back</a></p>
-</body></html>
-<?php $mysqli->close();
-PHPSEARCH
+LIB_PATH = "/opt/libmariadb-3.4.8/lib/mariadb/libmariadb.so"
+#LIB_PATH = "/opt/libmariadb-3.4.11/lib/mariadb/libmariadb.so"
+if not os.path.exists(LIB_PATH):
+    for root, dirs, files in os.walk("/opt/libmariadb-3.4.8"):
+        for f in files:
+            if f.startswith("libmariadb.so"):
+                LIB_PATH = os.path.join(root, f)
+                break
 
-    mark_done php_site
-    ok "PHP site created at ${SITE_DIR}"
+lib = ctypes.CDLL(LIB_PATH)
+
+lib.mysql_init.restype = ctypes.c_void_p
+lib.mysql_init.argtypes = [ctypes.c_void_p]
+
+lib.mysql_options.restype = ctypes.c_int
+lib.mysql_options.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p]
+
+lib.mysql_real_connect.restype = ctypes.c_void_p
+lib.mysql_real_connect.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p,
+    ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint,
+    ctypes.c_char_p, ctypes.c_ulong
+]
+
+lib.mysql_real_escape_string.restype = ctypes.c_ulong
+lib.mysql_real_escape_string.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulong
+]
+
+lib.mysql_query.restype = ctypes.c_int
+lib.mysql_query.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+
+lib.mysql_store_result.restype = ctypes.c_void_p
+lib.mysql_store_result.argtypes = [ctypes.c_void_p]
+
+lib.mysql_fetch_row.restype = ctypes.POINTER(ctypes.c_char_p)
+lib.mysql_fetch_row.argtypes = [ctypes.c_void_p]
+
+lib.mysql_num_rows.restype = ctypes.c_ulonglong
+lib.mysql_num_rows.argtypes = [ctypes.c_void_p]
+
+lib.mysql_num_fields.restype = ctypes.c_uint
+lib.mysql_num_fields.argtypes = [ctypes.c_void_p]
+
+lib.mysql_free_result.restype = None
+lib.mysql_free_result.argtypes = [ctypes.c_void_p]
+
+lib.mysql_close.restype = None
+lib.mysql_close.argtypes = [ctypes.c_void_p]
+
+lib.mysql_error.restype = ctypes.c_char_p
+lib.mysql_error.argtypes = [ctypes.c_void_p]
+
+lib.mysql_get_client_info.restype = ctypes.c_char_p
+lib.mysql_get_client_info.argtypes = []
+
+lib.mysql_character_set_name.restype = ctypes.c_char_p
+lib.mysql_character_set_name.argtypes = [ctypes.c_void_p]
+
+MYSQL_SET_CHARSET_NAME = 7
+
+
+def do_query(name_bytes):
+    conn = lib.mysql_init(None)
+    if not conn:
+        return None, "mysql_init failed"
+
+    lib.mysql_options(conn, MYSQL_SET_CHARSET_NAME, b"big5")
+
+    ret = lib.mysql_real_connect(
+        conn, b"127.0.0.1", b"labapp", b"labpass", b"labdb", 0, None, 0
+    )
+    if not ret:
+        err = lib.mysql_error(conn).decode(errors="replace")
+        lib.mysql_close(conn)
+        return None, f"connect failed: {err}"
+
+    client_ver = lib.mysql_get_client_info().decode(errors="replace")
+    charset = lib.mysql_character_set_name(conn).decode(errors="replace")
+
+    escaped_buf = ctypes.create_string_buffer(len(name_bytes) * 2 + 1)
+    esc_len = lib.mysql_real_escape_string(conn, escaped_buf, name_bytes, len(name_bytes))
+    escaped = escaped_buf.raw[:esc_len]
+
+    query = b"SELECT id, name FROM users WHERE name = '" + escaped + b"'"
+
+    hex_dump = " ".join(f"{b:02x}" for b in escaped)
+
+    info = {
+        "client": client_ver,
+        "charset": charset,
+        "input_hex": " ".join(f"{b:02x}" for b in name_bytes),
+        "escaped_hex": hex_dump,
+        "query": query.decode(errors="replace"),
+        "rows": []
+    }
+
+    if lib.mysql_query(conn, query):
+        info["error"] = lib.mysql_error(conn).decode(errors="replace")
+    else:
+        result = lib.mysql_store_result(conn)
+        if result:
+            nrows = lib.mysql_num_rows(result)
+            nfields = lib.mysql_num_fields(result)
+            for _ in range(nrows):
+                row = lib.mysql_fetch_row(result)
+                if row:
+                    cols = []
+                    for j in range(nfields):
+                        val = row[j]
+                        cols.append(val.decode("big5", errors="replace") if val else "NULL")
+                    info["rows"].append(cols)
+            lib.mysql_free_result(result)
+
+    lib.mysql_close(conn)
+    return info, None
+
+
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html><head><title>User Lookup - CVE Lab (Python)</title>
+<style>
+body {{ font-family: system-ui, sans-serif; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }}
+.q {{ background: #f0f0f0; padding: .5rem .7rem; border-radius: 4px; font-family: monospace; word-break: break-all; }}
+.result {{ margin: 1rem 0; }}
+.row {{ padding: .3rem 0; }}
+.info {{ color: #666; font-size: 0.9em; }}
+.error {{ color: #c00; }}
+</style>
+</head><body>
+<h1>User Lookup</h1>
+<p class="info">Python app using MariaDB Connector/C via ctypes</p>
+<form method="get" action="/search">
+<label>Name: <input type="text" name="name" value=""></label>
+<button type="submit">Search</button>
+</form>
+{body}
+</body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urlparse(self.path)
+
+        if parsed.path == "/search":
+            params = parse_qs(parsed.query, keep_blank_values=True, encoding='latin-1')
+            name_raw = params.get("name", [None])[0]
+
+            if name_raw is None:
+                body = '<p class="info">Enter a name to search.</p>'
+            else:
+                name_bytes = name_raw.encode('latin-1')
+
+                info, err = do_query(name_bytes)
+                if err:
+                    body = f'<p class="error">{html.escape(err)}</p>'
+                else:
+                    body = f'<p class="info">Client: {html.escape(info["client"])} | Charset: {html.escape(info["charset"])}</p>\n'
+                    body += f'<p class="info">Input hex: {html.escape(info["input_hex"])}</p>\n'
+                    body += f'<p class="info">Escaped hex: {html.escape(info["escaped_hex"])}</p>\n'
+                    body += '<p>Query sent to the database:</p>\n'
+                    body += f'<div class="q">{html.escape(info["query"])}</div>\n'
+
+                    if "error" in info:
+                        body += f'<p class="error">Query error: {html.escape(info["error"])}</p>\n'
+                    else:
+                        body += f'<div class="result"><p>Rows returned: {len(info["rows"])}</p>\n'
+                        for cols in info["rows"]:
+                            body += f'<div class="row">#{html.escape(cols[0])} {html.escape(cols[1])}</div>\n'
+                        body += '</div>\n'
+        else:
+            body = '<p class="info">Enter a name to search.</p>'
+
+        page = HTML_TEMPLATE.format(body=body)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(page.encode())
+
+    def log_message(self, format, *args):
+        print(f"[{self.log_date_time_string()}] {args[0]}")
+
+
+if __name__ == "__main__":
+    port = 9000
+    client_ver = lib.mysql_get_client_info().decode()
+    print(f"Loaded MariaDB Connector/C: {client_ver}")
+    print(f"Library path: {LIB_PATH}")
+    print(f"Serving on http://127.0.0.1:{port}/")
+    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+WEBAPP
+
+    mark_done web_app
+    ok "Web app created at ${SITE_DIR}/web_app.py"
 }
 
 # ============================================================================
@@ -420,11 +584,18 @@ verify() {
     [[ -x "${PYTHON_PREFIX}/bin/python3.13" ]] && \
         "${PYTHON_PREFIX}/bin/python3.13" --version || warn "not built"
 
-    printf '  Connector/C: '
+    printf '  Connector/C (vuln %s):  ' "${CONNC_VER}"
     if [[ -d "${CONNC_PREFIX}/lib" ]]; then
         ls "${CONNC_PREFIX}"/lib/mariadb/libmariadb.so* 2>/dev/null | head -1 \
             || ls "${CONNC_PREFIX}"/lib/libmariadb.so* 2>/dev/null | head -1 \
             || echo "installed at ${CONNC_PREFIX}"
+    else warn "not built"; fi
+
+    printf '  Connector/C (fixed %s): ' "${CONNC_FIXED_VER}"
+    if [[ -d "${CONNC_FIXED_PREFIX}/lib" ]]; then
+        ls "${CONNC_FIXED_PREFIX}"/lib/mariadb/libmariadb.so* 2>/dev/null | head -1 \
+            || ls "${CONNC_FIXED_PREFIX}"/lib/libmariadb.so* 2>/dev/null | head -1 \
+            || echo "installed at ${CONNC_FIXED_PREFIX}"
     else warn "not built"; fi
 
     printf '  MariaDB svc: '
@@ -434,8 +605,8 @@ verify() {
     sudo mysql --skip-ssl "${DB_NAME}" -e "SELECT COUNT(*) AS users FROM users;" 2>/dev/null \
         | tail -1 | xargs -I{} echo "{} user rows" || warn "no data"
 
-    printf '  PHP site:    '
-    [[ -f "${SITE_DIR}/index.php" ]] && echo "present at ${SITE_DIR}" || warn "missing"
+    printf '  Web app:     '
+    [[ -f "${SITE_DIR}/web_app.py" ]] && echo "present at ${SITE_DIR}/web_app.py" || warn "missing"
 
     printf '  C client:    '
     if [[ -x "${SITE_DIR}/db_client" ]]; then
@@ -460,7 +631,7 @@ ${c_green}============================================================${c_off}
 
  Start the services for a demo:
    sudo ${APACHE_PREFIX}/bin/apachectl -k start
-   cd ${SITE_DIR} && php -S 127.0.0.1:8000      # then browse http://127.0.0.1:8000/
+   cd ${SITE_DIR} && python3 web_app.py          # then browse http://127.0.0.1:9000/
 
  Quick WebDAV sanity check (normal operation, not an exploit):
    curl -u labuser:labpass -T /etc/hostname http://localhost/webdav/test.txt
@@ -469,20 +640,24 @@ ${c_green}============================================================${c_off}
  Python interpreter:
    ${PYTHON_PREFIX}/bin/python3.13
 
+ Web app — loads the pinned connector directly via ctypes (benign usage):
+   cd ${SITE_DIR} && python3 web_app.py      # → http://127.0.0.1:9000/  (loads 3.4.8)
+   # To demo the patched build, edit LIB_PATH in web_app.py to point at
+   # ${CONNC_FIXED_PREFIX} (a commented line for it is already in the file),
+   # re-run, and compare the 'Escaped hex' for the SAME big5 input.
+
  C client linked to the pinned 3.4.8 connector (benign usage):
    ${SITE_DIR}/db_client alice
    # 'client library' in the output confirms 3.4.8 is the linked version.
-   # For the before/after demo, rebuild against a patched 3.4.9 connector and
-   # run the SAME input through both — compare the 'escaped (hex)' lines.
 
 ${c_yellow} NEXT STEPS / CAVEATS${c_off}
   * Prevent silent patching of the pinned versions:
       sudo apt-mark hold apache2 mariadb-server
   * Switch the VM network adapter to Host-Only / Internal NOW, then snapshot
     the VM as 'lab-ready'.
-  * PHP uses its OWN bundled connector, not ${CONNC_PREFIX}. To demo the big5
-    CVE faithfully you'll need PHP compiled against 3.4.8, or a small C client
-    linked to it. Confirm with your instructor which they expect.
+  * The web app loads ${CONNC_PREFIX} (or ${CONNC_FIXED_PREFIX}) directly via
+    ctypes, so it genuinely exercises the pinned connector's escaping routine —
+    no PHP, and nothing needs recompiling to switch between vuln and patched.
 
 NOTES
 }
@@ -499,7 +674,7 @@ main() {
     install_python
     install_mariadb_server
     install_connc
-    install_php_site
+    install_web_app
     install_c_client
     start_apache
     verify
