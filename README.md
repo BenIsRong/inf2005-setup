@@ -18,10 +18,10 @@
 
 > **Repo layout note:** the `site/` folder here just holds the sources for browsing and
 > reference. The setup - whether you run `setup-lab.sh` or follow the manual steps - writes its
-> own copies of these files to `~/lab-site/` on the VM at install time and runs them from
-> there. So the repo layout is independent of where the app actually runs; moving the sources
-> around in the repo doesn't change the setup. If you prefer to run the repo copy directly,
-> `cd` into `site/` and run `python3 web_app.py` from there instead.
+> own copies on the VM at install time (the web app to `~/web_app.py`, the C client to
+> `~/lab-site/`) and runs them from there. So the repo layout is independent of where the app
+> actually runs; moving the sources around in the repo doesn't change the setup. If you prefer to
+> run the repo copy directly, `cd` into `site/` and run `python3 web_app.py` from there instead.
 
 ---
 
@@ -260,15 +260,14 @@ A minimal web app that (a) serves normally, and (b) exposes a DB-query page that
 No extra packages are needed - the app uses only the Python standard library, and the **system**
 `python3` is fine (this is *not* the pinned 3.13.15 interpreter, which belongs to the unrelated
 `ssl` CVE). `web_app.py` is included in this package (the automated script also writes it to
-`~/lab-site/`). It is a **target app only** - written the normal, trusting way with
+`~/web_app.py`). It is a **target app only** - written the normal, trusting way with
 `mysql_real_escape_string()`; the flaw is in the connector's big5 handling, not in this code, and
 there's no attack payload.
 
 ```bash
-mkdir -p ~/lab-site
-cp site/web_app.py ~/lab-site/      # or use the copy setup-lab.sh already wrote
+cp site/web_app.py ~/               # or use the copy setup-lab.sh already wrote
 
-cd ~/lab-site
+cd ~
 python3 web_app.py                  # loads 3.4.8 → http://127.0.0.1:9000/
 ```
 
@@ -326,7 +325,7 @@ ls /opt/libmariadb-3.4.11/lib
 sudo mysql labdb -e "SELECT * FROM users;"
 
 # Python web app (start it, then curl in another shell)
-cd ~/lab-site && python3 web_app.py &   # http://127.0.0.1:9000/
+cd ~ && python3 web_app.py &   # http://127.0.0.1:9000/
 curl "http://127.0.0.1:9000/search?name=alice"
 
 # C client linked to the pinned 3.4.8 connector

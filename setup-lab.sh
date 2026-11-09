@@ -263,9 +263,8 @@ install_web_app() {
     if done_before web_app; then ok "Web app already created (skip)"; return; fi
     say "Creating the Python sample web app"
     command -v python3 >/dev/null || die "python3 not found (needed for the web app)."
-    mkdir -p "$SITE_DIR"
 
-    cat > "${SITE_DIR}/web_app.py" <<'WEBAPP'
+    cat > "${HOME}/web_app.py" <<'WEBAPP'
 import ctypes
 import ctypes.util
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -465,7 +464,7 @@ if __name__ == "__main__":
 WEBAPP
 
     mark_done web_app
-    ok "Web app created at ${SITE_DIR}/web_app.py"
+    ok "Web app created at ${HOME}/web_app.py"
 }
 
 # ============================================================================
@@ -606,7 +605,7 @@ verify() {
         | tail -1 | xargs -I{} echo "{} user rows" || warn "no data"
 
     printf '  Web app:     '
-    [[ -f "${SITE_DIR}/web_app.py" ]] && echo "present at ${SITE_DIR}/web_app.py" || warn "missing"
+    [[ -f "${HOME}/web_app.py" ]] && echo "present at ${HOME}/web_app.py" || warn "missing"
 
     printf '  C client:    '
     if [[ -x "${SITE_DIR}/db_client" ]]; then
@@ -631,7 +630,7 @@ ${c_green}============================================================${c_off}
 
  Start the services for a demo:
    sudo ${APACHE_PREFIX}/bin/apachectl -k start
-   cd ${SITE_DIR} && python3 web_app.py          # then browse http://127.0.0.1:9000/
+   cd ${HOME} && python3 web_app.py              # then browse http://127.0.0.1:9000/
 
  Quick WebDAV sanity check (normal operation, not an exploit):
    curl -u labuser:labpass -T /etc/hostname http://localhost/webdav/test.txt
@@ -641,8 +640,8 @@ ${c_green}============================================================${c_off}
    ${PYTHON_PREFIX}/bin/python3.13
 
  Web app — loads the pinned connector directly via ctypes (benign usage):
-   cd ${SITE_DIR} && python3 web_app.py      # → http://127.0.0.1:9000/  (loads 3.4.8)
-   # To demo the patched build, edit LIB_PATH in web_app.py to point at
+   cd ${HOME} && python3 web_app.py          # → http://127.0.0.1:9000/  (loads 3.4.8)
+   # To demo the patched build, edit LIB_PATH in ~/web_app.py to point at
    # ${CONNC_FIXED_PREFIX} (a commented line for it is already in the file),
    # re-run, and compare the 'Escaped hex' for the SAME big5 input.
 
