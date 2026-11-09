@@ -204,9 +204,9 @@ SQL
     # then seed a row whose name is raw big5 bytes (0xA4A4A4E5). SET NAMES big5
     # must run in the same client session as the INSERT so the server reads the
     # literal bytes as big5, so this is a separate invocation from the heredoc.
-    mysql -u "${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" \
+    mysql --skip-ssl -u "${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" \
         -e "ALTER TABLE users MODIFY name VARCHAR(64) CHARACTER SET big5;"
-    mysql -u "${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" \
+    mysql --skip-ssl -u "${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" \
         -e "SET NAMES big5; INSERT INTO users VALUES (3, 0xA4A4A4E5, 'flag_chinese');"
 
     mark_done mariadb_server
